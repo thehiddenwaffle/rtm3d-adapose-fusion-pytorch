@@ -34,7 +34,7 @@ class RTMPoseToAdaPose(nn.Module):
         bypass_root_center: ty.Optional[tch.Tensor] = None,
     ):
         B, _, H, W = depth.shape
-        coco_main_pcl_norm, pose_init_centered, pred_torso_root, inf_torso_root, _ = (
+        coco_main_pcl_norm, pose_init_centered, pred_torso_root, inf_torso_root, uv_conf, _ = (
             self.pre(depth, simcc_x, simcc_y, simcc_z, K_inv, bypass_root_center)
         )
         if not self.lstm:
@@ -47,11 +47,11 @@ class RTMPoseToAdaPose(nn.Module):
         pre_fc = self.pre_fc(
             tch.cat([pcl_embedding, pose_init_centered.view(B, -1)], dim=-1)
         )
-        z_len_residual = self.fc(pre_fc)
+        z_len_residual = self.fc(pre_fc) * 1.5
 
         coco_main_metric_xyz = pose_init_centered.clone() + inf_torso_root
         coco_main_metric_xyz[:, :, 2] = coco_main_metric_xyz[:, :, 2] + z_len_residual
 
         # TODO norm based(?) cluster lifting
 
-        return coco_main_metric_xyz, pred_torso_root
+        return coco_main_metric_xyz, pred_torso_root, uv_conf

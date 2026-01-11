@@ -179,7 +179,7 @@ class EgoBodyItem(ty.NamedTuple):
 
     @staticmethod
     def collate(items: ty.List["EgoBodyItem"]) -> "EgoBodyItem":
-        batch = [i for i in items if bool(tch.all(items[0].valid_entry))]
+        batch = [i for i in items if bool(tch.all(i.valid_entry))]
         if not any(batch):
             return invalidEgo
 
@@ -392,7 +392,8 @@ class EgoBodyDataset(Dataset):
             points_master, confidence, simcc, roi = self._load_keypoints(
                 npz_path, subject, camera
             )
-            # TODO THESE ARE RGB NOT IR
+            if roi is None:
+                return invalidEgo
             x0, y0, scale_x, scale_y = (
                 roi["x0"],
                 roi["y0"],
