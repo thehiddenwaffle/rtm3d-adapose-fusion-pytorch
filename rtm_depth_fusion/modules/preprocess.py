@@ -141,10 +141,9 @@ class Preprocessor(nn.Module):
 
         if bypass_root_center is not None:
             torso_for_rest = torso_root_mean.clone()
-            torso_for_rest[:, :, 2] = torso_for_rest[:, :, 2] + (
-                bypass_root_center.to(device=torso_root_mean.device)
-                - torso_root_mean[:, :, 2]
-            )
+            torso_for_rest[:, :, 2] = bypass_root_center.to(
+                device=torso_root_mean.device
+            )[:, 2:]
 
         pose_init_centered = (
             rays[:, coco_main_kps, :] * torso_for_rest[:, :, 2:]

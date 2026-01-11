@@ -37,9 +37,9 @@ def huber_loss(err, delta=0.1, reduction="mean"):
     loss = 0.5 * quadratic**2 + delta * linear
 
     if reduction == "mean":
-        return loss.mean()
+        return loss.mean(dim=-1, keepdim=True)
     elif reduction == "sum":
-        return loss.sum()
+        return loss.sum(dim=-1, keepdim=True)
     else:
         return loss
 
@@ -47,14 +47,12 @@ def huber_loss(err, delta=0.1, reduction="mean"):
 def root_z_loss_fn(pred_root_z, kps133_cam):
     torso_derived_from = tch.tensor([5, 6, 11, 12], device=kps133_cam.device)
     root_gt = tch.mean(kps133_cam[:, torso_derived_from, :], dim=1)
-    return huber_loss(pred_root_z - root_gt[:, 2])
+    return huber_loss(pred_root_z[:, :, 2:].squeeze(1) - root_gt[:, 2:], reduction="")
 
 
 def joint19_z_loss_fn(pred_coco_main_metric_xyz, kps133_cam):
     main_19 = tch.arange(0, 19, device=kps133_cam.device)
-    return huber_loss(
-        pred_coco_main_metric_xyz[:, :, 2] - kps133_cam[:, main_19, 2], reduction=""
-    )
+    return huber_loss(pred_coco_main_metric_xyz[:, :, 2] - kps133_cam[:, main_19, 2])
 
 
 def train_one_epoch(
@@ -89,18 +87,17 @@ def train_one_epoch(
                 batch_is_ego.simcc_y,
                 batch_is_ego.simcc_z,
                 batch_is_ego.K_inv,
-                None,
+                bypass_z_root,
             )
 
-            loss_z = root_z_loss_fn(pred_root_z, batch_is_ego.kps133_cam)
+            loss_z = root_z_loss_fn(pred_root_z, batch_is_ego.kps133_cam).mean()
             # TODO conf scaling
             loss_jt = joint19_z_loss_fn(
                 pred_coco_main_metric_xyz, batch_is_ego.kps133_cam
-            )
+            ).mean()
 
-            loss = loss_z
-            # TODO enable after some z training
-            # loss = loss_z + loss_jt
+            loss = loss_z + loss_jt
+            loss = loss.mean()
 
         scaler.scale(loss).backward()
 
