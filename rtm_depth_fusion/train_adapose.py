@@ -28,7 +28,7 @@ def load_ckpt(
 
 
 # My torch version is too far behind
-def huber_loss(err, delta=0.1, reduction="mean"):
+def huber_loss(err, delta=0.9, reduction="mean"):
     abs_error = tch.abs(err)
 
     quadratic = tch.minimum(abs_error, tch.tensor(delta, device=err.device))
