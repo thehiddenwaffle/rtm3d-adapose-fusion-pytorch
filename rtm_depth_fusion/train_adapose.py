@@ -83,7 +83,7 @@ def train_one_epoch(
         optimizer.zero_grad()
 
         with tch.cuda.amp.autocast(enabled=args.amp):
-            torso_derived_from = tch.tensor([5, 6, 11, 12], device=args.device)
+            torso_derived_from = tch.tensor([5, 6, 11, 12], device=batch.kps133_cam.device)
             bypass_z_root = tch.mean(batch.kps133_cam[:, torso_derived_from, :], dim=1)
             pred_coco_main_metric_xyz, pred_root_z, uv_conf = model(
                 batch_is_ego.depth,
