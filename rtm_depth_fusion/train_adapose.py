@@ -12,11 +12,11 @@ from rtm_depth_fusion.datasets import EgoBodyDataset, EgoBodyItem
 
 
 def load_ckpt(
-    path: str,
-    model: nn.Module,
-    optimizer: ty.Optional[tch.optim.Optimizer] = None,
-    scaler: ty.Optional[tch.cuda.amp.GradScaler] = None,
-    map_location: str = "cpu",
+        path: str,
+        model: nn.Module,
+        optimizer: ty.Optional[tch.optim.Optimizer] = None,
+        scaler: ty.Optional[tch.cuda.amp.GradScaler] = None,
+        map_location: str = "cpu",
 ) -> ty.Dict[str, ty.Any]:
     ckpt = tch.load(path, map_location=map_location)
     model.load_state_dict(ckpt["model"], strict=True)
@@ -34,7 +34,7 @@ def huber_loss(err, delta=0.1, reduction="mean"):
     quadratic = tch.minimum(abs_error, tch.tensor(delta, device=err.device))
     linear = abs_error - quadratic
 
-    loss = 0.5 * quadratic**2 + delta * linear
+    loss = 0.5 * quadratic ** 2 + delta * linear
 
     if reduction == "mean":
         return loss.mean(dim=-1, keepdim=True)
@@ -50,18 +50,22 @@ def root_z_loss_fn(pred_root_z, kps133_cam):
     return huber_loss(pred_root_z[:, :, 2:].squeeze(1) - root_gt[:, 2:], reduction="")
 
 
-def joint19_z_loss_fn(pred_coco_main_metric_xyz, kps133_cam):
+def joint19_z_loss_fn(pred_coco_main_metric_xyz, kps133_cam, conf):
     main_19 = tch.arange(0, 19, device=kps133_cam.device)
-    return huber_loss(pred_coco_main_metric_xyz[:, :, 2] - kps133_cam[:, main_19, 2])
+    diff = pred_coco_main_metric_xyz[:, :, 2] - kps133_cam[:, main_19, 2]
+    # Anything > .75 is 1, anything <.25 is fully suppressed
+    w = tch.clamp(2.0 * (tch.min(conf, dim=-1).values - 0.25), min=0.05, max=0.99)
+    weighted_diff = (w * diff).sum() / w.sum()
+    return huber_loss(weighted_diff)
 
 
 def train_one_epoch(
-    model: RTMPoseToAdaPose,
-    loader: DataLoader,
-    optimizer: tch.optim.Optimizer,
-    scaler: tch.cuda.amp.GradScaler,
-    args: ap.Namespace,
-    epoch: int,
+        model: RTMPoseToAdaPose,
+        loader: DataLoader,
+        optimizer: tch.optim.Optimizer,
+        scaler: tch.cuda.amp.GradScaler,
+        args: ap.Namespace,
+        epoch: int,
 ) -> ty.Dict[str, float]:
     model.train()
     if not args.train_ada_layers:
