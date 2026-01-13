@@ -54,7 +54,7 @@ def joint19_z_loss_fn(pred_coco_main_metric_xyz, kps133_cam, conf):
     main_19 = tch.arange(0, 19, device=kps133_cam.device)
     diff = pred_coco_main_metric_xyz[:, :, 2] - kps133_cam[:, main_19, 2]
     # Anything > .75 is 1, anything <.25 is fully suppressed
-    w = tch.clamp(2.0 * (tch.min(conf, dim=-1).values - 0.25), min=0.05, max=0.99)
+    w = tch.clamp(2.0 * (tch.min(conf, dim=-1, keepdim=True).values - 0.25), min=0.05, max=0.99)
     weighted_diff = (w * diff).sum() / w.sum()
     return huber_loss(weighted_diff)
 
@@ -101,7 +101,6 @@ def train_one_epoch(
             ).mean()
 
             loss = loss_z + loss_jt
-            loss = loss.mean()
 
         scaler.scale(loss).backward()
 
