@@ -85,7 +85,7 @@ def train_one_epoch(
         with tch.cuda.amp.autocast(enabled=args.amp):
             torso_derived_from = tch.tensor([5, 6, 11, 12], device=args.device)
             bypass_z_root = tch.mean(batch.kps133_cam[:, torso_derived_from, :], dim=1)
-            pred_coco_main_metric_xyz, pred_root_z = model(
+            pred_coco_main_metric_xyz, pred_root_z, uv_conf = model(
                 batch_is_ego.depth,
                 batch_is_ego.simcc_x,
                 batch_is_ego.simcc_y,
@@ -97,7 +97,7 @@ def train_one_epoch(
             loss_z = root_z_loss_fn(pred_root_z, batch_is_ego.kps133_cam).mean()
             # TODO conf scaling
             loss_jt = joint19_z_loss_fn(
-                pred_coco_main_metric_xyz, batch_is_ego.kps133_cam
+                pred_coco_main_metric_xyz, batch_is_ego.kps133_cam, uv_conf
             ).mean()
 
             loss = loss_z + loss_jt
