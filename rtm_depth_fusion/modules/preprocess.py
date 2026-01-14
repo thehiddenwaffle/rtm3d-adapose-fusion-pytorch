@@ -159,6 +159,6 @@ class Preprocessor(nn.Module):
             pose_init_centered,
             pred_torso_root,
             torso_for_rest,
-            tch.cat([u_conf, v_conf], dim=-1),
+            tch.stack([u_conf, v_conf], dim=-1),
             (u_px, v_px, z_bin / z_len),
         )

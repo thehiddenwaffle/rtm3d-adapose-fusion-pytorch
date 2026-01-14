@@ -44,17 +44,22 @@ def huber_loss(err, delta=0.9, reduction="mean"):
         return loss
 
 
-def root_z_loss_fn(pred_root_z, kps133_cam):
+def root_z_loss_fn(pred_root_z, kps133_cam, conf):
     torso_derived_from = tch.tensor([5, 6, 11, 12], device=kps133_cam.device)
     root_gt = tch.mean(kps133_cam[:, torso_derived_from, :], dim=1)
-    return huber_loss(pred_root_z[:, :, 2:].squeeze(1) - root_gt[:, 2:], reduction="")
+    diff = pred_root_z[:, :, 2:].squeeze(1) - root_gt[:, 2:]
+    w = tch.min(tch.mean(conf[:, torso_derived_from, :], dim =1), dim=-1, keepdim=True).values
+    return huber_loss(w * diff, reduction="")
 
 
 def joint19_z_loss_fn(pred_coco_main_metric_xyz, kps133_cam, conf):
-    main_19 = tch.arange(0, 19, device=kps133_cam.device)
+    main_19 = tch.tensor(
+            [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 100, 121],
+            device=kps133_cam.device,
+        )
     diff = pred_coco_main_metric_xyz[:, :, 2] - kps133_cam[:, main_19, 2]
     # Anything > .75 is 1, anything <.25 is fully suppressed
-    w = tch.clamp(2.0 * (tch.min(conf, dim=-1, keepdim=True).values - 0.25), min=0.05, max=0.99)
+    w = tch.clamp(2.0 * (tch.min(conf[:, main_19, :], dim=-1).values - 0.25), min=0.05, max=0.99)
     weighted_diff = (w * diff).sum() / w.sum()
     return huber_loss(weighted_diff)
 
@@ -94,8 +99,7 @@ def train_one_epoch(
                 bypass_z_root,
             )
 
-            loss_z = root_z_loss_fn(pred_root_z, batch_is_ego.kps133_cam).mean()
-            # TODO conf scaling
+            loss_z = root_z_loss_fn(pred_root_z, batch_is_ego.kps133_cam, uv_conf).mean()
             loss_jt = joint19_z_loss_fn(
                 pred_coco_main_metric_xyz, batch_is_ego.kps133_cam, uv_conf
             ).mean()
@@ -129,9 +133,23 @@ def train_one_epoch(
         "root_z": tot_root_z / max(n, 1),
     }
 
+def save_ckpt(path: str,
+              model: nn.Module,
+              optimizer: tch.optim.Optimizer,
+              scaler: tch.cuda.amp.GradScaler,
+              epoch: int) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    payload = {
+        "epoch": epoch,
+        "model": model.state_dict(),
+        "optim": optimizer.state_dict(),
+        "scaler": scaler.state_dict(),
+    }
+    tch.save(payload, path)
+
 
 def main():
-    DEFAULT_LR = 3e-4
+    DEFAULT_LR = 1e-4
     parser = ap.ArgumentParser("Train TinyCenterScale")
     parser.add_argument(
         "--dataset-root",
@@ -140,9 +158,9 @@ def main():
         help="path to train data (dataset-specific)",
     )
 
-    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--epochs", type=int, default=15)
     parser.add_argument("--batch-size", type=int, default=8)
-    parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument("--num-workers", type=int, default=5)
 
     parser.add_argument("--lr", type=float, default=DEFAULT_LR)
     parser.add_argument("--grad-clip", type=float, default=1.0)
@@ -151,13 +169,13 @@ def main():
 
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--seed", type=int, default=7654321)
-    parser.add_argument("--ckpt-dir", type=str, default="ckpts_rtm_ada")
+    parser.add_argument("--ckpt-dir", type=str, default="./ckpts_rtm_ada")
     parser.add_argument("--resume", type=str, default="")
     parser.add_argument(
         "--init-from-tf", type=str, default="adapose_weights/density_weights_model"
     )
     parser.add_argument("--train-ada-layers", action="store_true", default=False)
-    parser.add_argument("--log-every", type=int, default=4)
+    parser.add_argument("--log-every", type=int, default=100)
     args = parser.parse_args()
 
     tch.manual_seed(args.seed)
@@ -197,7 +215,7 @@ def main():
     os.makedirs(args.ckpt_dir, exist_ok=True)
 
     train_ds = EgoBodyDataset(args.dataset_root, "train")
-    val_ds = EgoBodyDataset(args.dataset_root, "val")
+    # val_ds = EgoBodyDataset(args.dataset_root, "val")
 
     train_loader = DataLoader(
         train_ds,
@@ -208,20 +226,23 @@ def main():
         drop_last=True,
         collate_fn=lambda b: EgoBodyItem.collate(b),
     )
-    val_loader = DataLoader(
-        val_ds,
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=args.num_workers,
-        pin_memory=True,
-        drop_last=False,
-        collate_fn=lambda b: EgoBodyItem.collate(b),
-    )
+    # val_loader = DataLoader(
+    #     val_ds,
+    #     batch_size=args.batch_size,
+    #     shuffle=False,
+    #     num_workers=args.num_workers,
+    #     pin_memory=True,
+    #     drop_last=False,
+    #     collate_fn=lambda b: EgoBodyItem.collate(b),
+    # )
 
     for epoch in range(start_epoch, args.epochs):
         tr = train_one_epoch(model, train_loader, optimizer, scaler, args, epoch)
         # va = validate(model, val_loader, cfg)
         scheduler.step()
+
+        save_ckpt(os.path.join(args.ckpt_dir, f"epoch_{epoch:03d}.pt"),
+                  model, optimizer, scaler, epoch)
 
 
 if __name__ == "__main__":

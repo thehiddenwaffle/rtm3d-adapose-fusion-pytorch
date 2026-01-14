@@ -355,7 +355,7 @@ class EgoBodyDataset(Dataset):
             raise RuntimeError(f"No samples found for split='{split}'.")
 
     def __len__(self) -> int:
-        return len(self.entries)
+        return len(self.entries) // 2
 
     def __getitem__(self, idx: int) -> EgoBodyItem:
         entry = self.entries[idx]
