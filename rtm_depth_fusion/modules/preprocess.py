@@ -84,13 +84,14 @@ class Preprocessor(nn.Module):
         prob_sharp = prob * tch.tensor(
             [sharpening_factor], device=prob.device, dtype=prob.dtype
         )
+        # https://github.com/pytorch/pytorch/issues/136918
         bins = tch.arange(
-            prob_sharp.shape[-1], device=prob_sharp.device, dtype=prob_sharp.dtype
+            float(prob_sharp.shape[-1]), device=prob_sharp.device, dtype=prob_sharp.dtype
         )  # [N]
         prob_sharp = F.softmax(prob_sharp, dim=-1)
         expectation = (prob_sharp * bins).sum(-1, keepdim=True)  # [B, K, 1]
         conf, _indexes = tch.max(prob, dim=-1)
-        return expectation, conf, float(bins.shape[0])
+        return expectation, conf.clamp(0.01, 1.0), tch.tensor([bins.shape[0]], device=prob.device)
 
     def forward(
         self,
@@ -160,5 +161,5 @@ class Preprocessor(nn.Module):
             pred_torso_root,
             torso_for_rest,
             tch.stack([u_conf, v_conf], dim=-1),
-            (u_px, v_px, z_bin / z_len),
+            u_px, v_px, z_bin / z_len,
         )

@@ -14,8 +14,8 @@ from typing import Iterable, List, Sequence
 
 import onnx
 import torch as tch
-from onnx import TensorProto
-from onnx import compose
+from onnx import TensorProto, compose, version_converter, helper, ModelProto
+from onnx.compose import add_prefix
 
 from rtm_depth_fusion import RTMPoseToAdaPose
 
@@ -28,10 +28,9 @@ EXPECTED_SIMCC_OUTPUT_SHAPES = {
 
 
 def export_depth_fusion_net_to_onnx(model_path, output_onnx_path="_ada_post.onnx"):
-    # Check if a GPU is available for export
     device = tch.device("cuda" if tch.cuda.is_available() else "cpu")
+    device = tch.device('cpu')
 
-    # Initialize the model and load its weights
     post_model = RTMPoseToAdaPose()
 
     post_model.load_state_dict(tch.load(model_path, map_location=device)["model"])
@@ -50,16 +49,18 @@ def export_depth_fusion_net_to_onnx(model_path, output_onnx_path="_ada_post.onnx
     camera_K_inv = tch.randn(batch_size, 3, 3, device=device)  # Intrinsic inverse matrix(Note must be modified to be the crop of the input)
 
     # Export the model
-    return tch.onnx.export(
+    tch.onnx.export(
         post_model.half(),
-        (depth.half(), simcc_x.half(), simcc_y.half(), simcc_z.half(), camera_K_inv.half()),  # Inputs to the model
+        (depth.half(), simcc_x.half(), simcc_y.half(), simcc_z.half(), camera_K_inv.half()),
         output_onnx_path,
-        export_params=True,  # Store parameter values inside the file
-        opset_version=11,  # ONNX version compatibility
-        input_names=["depth", "simcc_x", "simcc_y", "simcc_z", "camera_K_inv"],  # Input tensor names
-        output_names=["delta_d", "confidence", "surface_xyz", "refined_xyz", "uv_coordinates"],  # Output tensor names
-        dynamo=True
-    ).model_proto
+        export_params=True,
+        # external_data=True,
+        opset_version=11,
+        input_names=["depth", "simcc_x", "simcc_y", "simcc_z", "camera_K_inv"],
+        output_names=["kps_xyz", "dbg_torso_root_center_pred", "dbg_kp_pix_confidence", "dbg_kp_z_pred", "dbg_px_coords", "dbg_z_prior"],
+        # dynamo=True,
+    )
+    return onnx.load(output_onnx_path)
 
 
 def combine_models(
@@ -69,13 +70,16 @@ def combine_models(
         pose_output_names: Iterable[str],
 ) -> None:
     pose_model = onnx.load(pose_path)
+    # If it's this easy why is there even an error on mismatch????????
+    # pose_model.ir_version = 10
+
     depth_model = export_depth_fusion_net_to_onnx(ckpt_path)
 
     io_map = list(zip(pose_output_names, ("simcc_x", "simcc_y", "simcc_z")))
 
     merged = compose.merge_models(
-        pose_model,
-        depth_model,
+        add_prefix(pose_model, "rtm_", rename_edges=False, rename_inputs=False, rename_outputs=False),
+        add_prefix(depth_model, "ada_", rename_edges=False, rename_inputs=False, rename_outputs=False),
         io_map=io_map,
     )
     onnx.save(merged, output_path)
@@ -92,7 +96,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--ada-weights",
-        default="../../ckpts_center_scale/epoch_010.pt",
+        default="../../ckpts_rtm_ada/epoch_026.pt",
         help="Path to the ada checkpoint.",
     )
     parser.add_argument(

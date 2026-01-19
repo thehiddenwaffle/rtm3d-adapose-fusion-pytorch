@@ -48,7 +48,7 @@ def root_z_loss_fn(pred_root_z, kps133_cam, conf):
     torso_derived_from = tch.tensor([5, 6, 11, 12], device=kps133_cam.device)
     root_gt = tch.mean(kps133_cam[:, torso_derived_from, :], dim=1)
     diff = pred_root_z[:, :, 2:].squeeze(1) - root_gt[:, 2:]
-    w = tch.min(tch.mean(conf[:, torso_derived_from, :], dim =1), dim=-1, keepdim=True).values
+    w = tch.min(tch.mean(conf[:, torso_derived_from, :], dim =1) ** 2.0, dim=-1, keepdim=True).values
     return huber_loss(w * diff, reduction="")
 
 
@@ -90,13 +90,13 @@ def train_one_epoch(
         with tch.cuda.amp.autocast(enabled=args.amp):
             torso_derived_from = tch.tensor([5, 6, 11, 12], device=batch.kps133_cam.device)
             bypass_z_root = tch.mean(batch.kps133_cam[:, torso_derived_from, :], dim=1)
-            pred_coco_main_metric_xyz, pred_root_z, uv_conf = model(
+            pred_coco_main_metric_xyz, pred_root_z, uv_conf, _, _, _ = model(
                 batch_is_ego.depth,
                 batch_is_ego.simcc_x,
                 batch_is_ego.simcc_y,
                 batch_is_ego.simcc_z,
                 batch_is_ego.K_inv,
-                bypass_z_root,
+                # bypass_z_root,
             )
 
             loss_z = root_z_loss_fn(pred_root_z, batch_is_ego.kps133_cam, uv_conf).mean()
@@ -158,7 +158,7 @@ def main():
         help="path to train data (dataset-specific)",
     )
 
-    parser.add_argument("--epochs", type=int, default=15)
+    parser.add_argument("--epochs", type=int, default=35)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--num-workers", type=int, default=5)
 

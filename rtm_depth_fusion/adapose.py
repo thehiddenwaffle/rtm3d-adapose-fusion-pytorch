@@ -2,7 +2,7 @@ import torch as tch
 import torch.nn as nn
 import typing as ty
 
-from modules import PCLSampler, PointNet, Preprocessor
+from .modules import PCLSampler, PointNet, Preprocessor
 
 
 class RTMPoseToAdaPose(nn.Module):
@@ -34,9 +34,10 @@ class RTMPoseToAdaPose(nn.Module):
         bypass_root_center: ty.Optional[tch.Tensor] = None,
     ):
         B, _, H, W = depth.shape
-        coco_main_pcl_norm, pose_init_centered, pred_torso_root, inf_torso_root, uv_conf, _ = (
+        coco_main_pcl_norm, pose_init_centered, pred_torso_root, inf_torso_root, uv_conf, u_px, v_px, zd_prior = (
             self.pre(depth, simcc_x, simcc_y, simcc_z, K_inv, bypass_root_center)
         )
+        dbg_px_uv = tch.cat([u_px, v_px], dim=-1)
         if not self.lstm:
             # Create time frame dimension
             coco_main_pcl_norm = coco_main_pcl_norm.unsqueeze(1)
@@ -54,4 +55,4 @@ class RTMPoseToAdaPose(nn.Module):
 
         # TODO norm based(?) cluster lifting
 
-        return coco_main_metric_xyz, pred_torso_root, uv_conf
+        return coco_main_metric_xyz, pred_torso_root, uv_conf, z_len_residual, dbg_px_uv, zd_prior
