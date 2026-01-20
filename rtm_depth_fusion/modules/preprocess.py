@@ -102,6 +102,14 @@ class Preprocessor(nn.Module):
         K_inv: tch.Tensor,
         bypass_root_center: ty.Optional[tch.Tensor] = None,
     ):
+        # Enforce consistent hand scale at the cost of wrist inaccuracy, if we can't see the hand we don't really care where the wrist is anyway
+        simcc_x[:, 9] = simcc_x[:, 91]
+        simcc_y[:, 9] = simcc_y[:, 91]
+        simcc_z[:, 9] = simcc_z[:, 91]
+        simcc_x[:, 10] = simcc_x[:, 112]
+        simcc_y[:, 10] = simcc_y[:, 112]
+        simcc_z[:, 10] = simcc_z[:, 112]
+
         u_bin, u_conf, u_len = self._expectation_1d(simcc_x)  # [B, K, 1]
         v_bin, v_conf, v_len = self._expectation_1d(simcc_y)  # [B, K, 1]
         # TODO does using Z(D) give any performance improvements? or maybe just go back to RTMPose2D?
@@ -158,6 +166,8 @@ class Preprocessor(nn.Module):
         return (
             coco_main_pcl_norm,
             pose_init_centered,
+            rays[:, coco_main_kps, :],
+            rays,
             pred_torso_root,
             torso_for_rest,
             tch.stack([u_conf, v_conf], dim=-1),
