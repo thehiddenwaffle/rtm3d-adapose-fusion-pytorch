@@ -29,11 +29,10 @@ EXPECTED_SIMCC_OUTPUT_SHAPES = {
 
 def export_depth_fusion_net_to_onnx(model_path, output_onnx_path="_ada_post.onnx"):
     device = tch.device("cuda" if tch.cuda.is_available() else "cpu")
-    device = tch.device('cpu')
 
     post_model = RTMPoseToAdaPose()
 
-    post_model.load_state_dict(tch.load(model_path, map_location=device)["model"])
+    # post_model.load_state_dict(tch.load(model_path, map_location=device)["model"])
     post_model.to(device)
     post_model.eval()
 
@@ -46,7 +45,9 @@ def export_depth_fusion_net_to_onnx(model_path, output_onnx_path="_ada_post.onnx
     simcc_x = tch.randn(batch_size, num_keypoints, depth_width * 2, device=device)  # SimCC X heatmap
     simcc_y = tch.randn(batch_size, num_keypoints, depth_height * 2, device=device)  # SimCC Y heatmap
     simcc_z = tch.randn(batch_size, num_keypoints, depth_width * 2, device=device)  # SimCC Z heatmap
-    camera_K_inv = tch.randn(batch_size, 3, 3, device=device)  # Intrinsic inverse matrix(Note must be modified to be the crop of the input)
+    camera_K_inv = tch.tensor([[[7.1048e-04, -0.0000e+00, 1.0357e-01],
+             [0.0000e+00, 1.2039e-03, -6.6613e-02],
+             [0.0000e+00, 0.0000e+00, 1.0000e+00]]], device=device) # Intrinsic inverse matrix(Note must be modified to be the crop of the input)
 
     # Export the model
     tch.onnx.export(

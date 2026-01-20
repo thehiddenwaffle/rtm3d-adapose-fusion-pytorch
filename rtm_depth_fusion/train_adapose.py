@@ -57,7 +57,7 @@ def joint19_z_loss_fn(pred_coco_main_metric_xyz, kps133_cam, conf):
             [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 100, 121],
             device=kps133_cam.device,
         )
-    diff = pred_coco_main_metric_xyz[:, :, 2] - kps133_cam[:, main_19, 2]
+    diff = pred_coco_main_metric_xyz[:, main_19, 2] - kps133_cam[:, main_19, 2]
     # Anything > .75 is 1, anything <.25 is fully suppressed
     w = tch.clamp(2.0 * (tch.min(conf[:, main_19, :], dim=-1).values - 0.25), min=0.05, max=0.99)
     weighted_diff = (w * diff).sum() / w.sum()
