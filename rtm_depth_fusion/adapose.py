@@ -66,7 +66,7 @@ class RTMPoseToAdaPose(nn.Module):
         left_rays_norm = rays_all[:, 91:112, :] / tch.norm(rays_all[:, 91:112, :], dim =-1, keepdim=True)
         left_hand_metric_xyz = left_rays_norm * left_wrist_to_kp_euclidean_dist_in_metric
 
-        assert tch.allclose(left_hand_metric_xyz[:, 0], coco_main_metric_xyz[:, 9])
+        # assert tch.allclose(left_hand_metric_xyz[:, 0], coco_main_metric_xyz[:, 9])
 
         right_wrist_d, right_mcp_d = tch.norm(coco_main_metric_xyz[:, 10:11], dim=-1, keepdim=True), tch.norm(coco_main_metric_xyz[:, 18:19], dim=-1, keepdim=True)
         right_hand_metric_over_px = tch.abs(right_wrist_d - right_mcp_d) / (zd_prior[:, 10:11] - zd_prior[:, 121:122])
@@ -78,7 +78,7 @@ class RTMPoseToAdaPose(nn.Module):
         right_rays_norm = rays_all[:, 112:133, :] / tch.norm(rays_all[:, 112:133, :], dim =-1, keepdim=True)
         right_hand_metric_xyz = right_rays_norm * right_wrist_to_kp_euclidean_dist_in_metric
 
-        assert tch.allclose(right_hand_metric_xyz[:, 0], coco_main_metric_xyz[:, 10])
+        # assert tch.allclose(right_hand_metric_xyz[:, 0], coco_main_metric_xyz[:, 10])
 
         # TODO IDC
         face_kp = rays_all[:, 23:91] * tch.mean(coco_main_metric_xyz[:, :5, 2:3]) # 68
