@@ -113,7 +113,7 @@ def depth_to_rgbz_image(
     return rgbz  # [B,1,Hrgb,Wrgb]
 
 
-def extract_pcl_patches(depth, uv_px, intrinsic_inv_K, window=5):
+def extract_pcl_patches(depth, uv_px, intrinsic_inv_K, window=3):
     """
     depth: [B, 1, H, W]
     uv_px: [B, K, 2] pixel coords (float or int, in pixel units)
