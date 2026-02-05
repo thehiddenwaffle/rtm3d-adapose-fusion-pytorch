@@ -376,9 +376,8 @@ class EgoBodyDataset(Dataset):
         view_info = self._get_view_info(recording, camera)
 
         # Depth frames are in eights of a mm for some reason: https://github.com/sanweiliti/EgoBody/blob/e3ecbb839d3d7d2fcd758cb311661105975840d1/release_vis_kinect_pcd.py#L75
-        depth_raw = imageio.imread(depth_path).astype(np.float32) / 8.0
-        depth_m = depth_raw * self.depth_scale
-        depth_tensor = tch.from_numpy(depth_m).unsqueeze(0)  # [1,H,W]
+        depth_mm = imageio.imread(depth_path).astype(np.float32) / 8.0
+        depth_tensor = tch.from_numpy(depth_mm).unsqueeze(0)  # [1,H,W]
         rgbz_but_only_z = depth_to_rgbz_image(
             depth_tensor.unsqueeze(0),
             view_info.p.ir_cam.inverse_tensor().unsqueeze(0),
@@ -443,7 +442,7 @@ class EgoBodyDataset(Dataset):
 
             return EgoBodyItem(
                 valid_entry=tch.tensor([True]),
-                depth=depth_stretched,
+                depth=depth_stretched.to(tch.int16),
                 K=color_resize_K.as_tensor().unsqueeze(0),
                 K_inv=color_resize_K.inverse_tensor().unsqueeze(0),
                 kps133_cam=points_cam_t,

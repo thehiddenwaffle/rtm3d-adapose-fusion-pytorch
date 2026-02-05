@@ -72,6 +72,7 @@ def train_one_epoch(
         args: ap.Namespace,
         epoch: int,
 ) -> ty.Dict[str, float]:
+    model.half()
     model.train()
     if not args.train_ada_layers:
         # model.pre.z_guesser.requires_grad_(False)
@@ -87,24 +88,23 @@ def train_one_epoch(
 
         optimizer.zero_grad()
 
-        with tch.cuda.amp.autocast(enabled=args.amp):
-            torso_derived_from = tch.tensor([5, 6, 11, 12], device=batch.kps133_cam.device)
-            bypass_z_root = tch.mean(batch.kps133_cam[:, torso_derived_from, :], dim=1)
-            pred_coco_main_metric_xyz, pred_root_z, uv_conf, _, _, _ = model(
-                batch_is_ego.depth,
-                batch_is_ego.simcc_x,
-                batch_is_ego.simcc_y,
-                batch_is_ego.simcc_z,
-                batch_is_ego.K_inv,
-                # bypass_z_root,
-            )
+        torso_derived_from = tch.tensor([5, 6, 11, 12], device=batch.kps133_cam.device)
+        bypass_z_root = tch.mean(batch.kps133_cam[:, torso_derived_from, :], dim=1)
+        pred_coco_main_metric_xyz, pred_root_z, uv_conf, _, _, _ = model(
+            batch_is_ego.depth,
+            batch_is_ego.simcc_x.to(tch.float16),
+            batch_is_ego.simcc_y.to(tch.float16),
+            batch_is_ego.simcc_z.to(tch.float16),
+            batch_is_ego.K_inv.to(tch.float16),
+            # bypass_z_root,
+        )
 
-            loss_z = root_z_loss_fn(pred_root_z, batch_is_ego.kps133_cam, uv_conf).mean()
-            loss_jt = joint19_z_loss_fn(
-                pred_coco_main_metric_xyz, batch_is_ego.kps133_cam, uv_conf
-            ).mean()
+        loss_z = root_z_loss_fn(pred_root_z, batch_is_ego.kps133_cam, uv_conf).mean()
+        loss_jt = joint19_z_loss_fn(
+            pred_coco_main_metric_xyz, batch_is_ego.kps133_cam, uv_conf
+        ).mean()
 
-            loss = loss_z + loss_jt
+        loss = loss_z + loss_jt
 
         scaler.scale(loss).backward()
 
