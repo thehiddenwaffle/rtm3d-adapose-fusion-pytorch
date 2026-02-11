@@ -10,11 +10,11 @@ inputs in the depth fusion network and keeps the remaining depth fusion inputs
 from __future__ import annotations
 
 import argparse
-from typing import Iterable, List, Sequence
+from typing import Iterable
 
 import onnx
 import torch as tch
-from onnx import TensorProto, compose, version_converter, helper, ModelProto
+from onnx import TensorProto, compose
 from onnx.compose import add_prefix
 
 from rtm_depth_fusion import RTMPoseToAdaPose
@@ -32,7 +32,7 @@ def export_depth_fusion_net_to_onnx(model_path, output_onnx_path="_ada_post.onnx
 
     post_model = RTMPoseToAdaPose()
 
-    # post_model.load_state_dict(tch.load(model_path, map_location=device)["model"])
+    post_model.load_state_dict(tch.load(model_path, map_location=device)["model"])
     post_model.to(device)
     post_model.eval()
 
@@ -45,20 +45,29 @@ def export_depth_fusion_net_to_onnx(model_path, output_onnx_path="_ada_post.onnx
     simcc_x = tch.randn(batch_size, num_keypoints, depth_width * 2, device=device)  # SimCC X heatmap
     simcc_y = tch.randn(batch_size, num_keypoints, depth_height * 2, device=device)  # SimCC Y heatmap
     simcc_z = tch.randn(batch_size, num_keypoints, depth_width * 2, device=device)  # SimCC Z heatmap
-    camera_K_inv = tch.tensor([[[[7.1048e-04, -0.0000e+00, 1.0357e-01],
-             [0.0000e+00, 1.2039e-03, -6.6613e-02],
-             [0.0000e+00, 0.0000e+00, 1.0000e+00]]]], device=device) # Intrinsic inverse matrix(Note must be modified to be the crop of the input)
+    camera_K_inv = tch.tensor([[[7.1048e-04, 0.0000e+00, 1.0357e-01],
+                                [0.0000e+00, 1.2039e-03, -6.6613e-02],
+                                [0.0000e+00, 0.0000e+00, 1.0000e+00]]],
+                              device=device)  # Intrinsic inverse matrix(Note must be modified to be the crop of the input)
+    camera_K_inv_squashed = tch.stack(
+        (
+            camera_K_inv[..., [0, 1], [0, 1]],  # [1/fx, 1/fy]
+            camera_K_inv[..., [0, 1], 2],  # [-cx/fx, -cy/fy]
+        ),
+        dim=1,
+    )
 
     # Export the model
     tch.onnx.export(
         post_model.half(),
-        (depth.half(), simcc_x.half(), simcc_y.half(), simcc_z.half(), camera_K_inv.half()),
+        (depth.half(), simcc_x.half(), simcc_y.half(), simcc_z.half(), camera_K_inv_squashed.half()),
         output_onnx_path,
         export_params=True,
         # external_data=True,
         opset_version=11,
         input_names=["depth", "simcc_x", "simcc_y", "simcc_z", "camera_K_inv"],
-        output_names=["kps_xyz", "dbg_torso_root_center_pred", "dbg_kp_pix_confidence", "dbg_kp_z_pred", "dbg_px_coords", "dbg_z_prior"],
+        output_names=["kps_xyz", "dbg_torso_root_center_pred", "dbg_kp_pix_confidence", "dbg_kp_z_pred",
+                      "dbg_px_coords", "dbg_z_prior"],
         # dynamo=True,
     )
     return onnx.load(output_onnx_path)

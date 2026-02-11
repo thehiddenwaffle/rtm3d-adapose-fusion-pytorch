@@ -30,15 +30,14 @@ class RTMPoseToAdaPose(nn.Module):
         simcc_x: tch.Tensor,
         simcc_y: tch.Tensor,
         simcc_z: tch.Tensor,
-        K_inv: tch.Tensor,
+        K_inv_dense: tch.Tensor,
         bypass_root_center: ty.Optional[tch.Tensor] = None,
     ):
         B, _, H, W = depth.shape
         # DepthAI will supply mm, we want to train and output m
         depth = ( depth / 1000.0 ).to(dtype=simcc_x.dtype)
-        K_inv = K_inv.squeeze(0)
         coco_main_pcl_norm, pose_init_centered, rays_19, rays_all, pred_torso_root, inf_torso_root, uv_conf, u_px, v_px, zd_prior = (
-            self.pre(depth, simcc_x, simcc_y, simcc_z, K_inv, bypass_root_center)
+            self.pre(depth, simcc_x, simcc_y, simcc_z, K_inv_dense, bypass_root_center)
         )
         dbg_px_uv = tch.cat([u_px, v_px], dim=-1)
         if not self.lstm:

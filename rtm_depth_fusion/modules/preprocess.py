@@ -71,7 +71,7 @@ class Preprocessor(nn.Module):
 
     @staticmethod
     def _expectation_1d(
-        prob: tch.Tensor, sharpening_factor=100.0
+            prob: tch.Tensor, sharpening_factor=100.0
     ) -> ty.Tuple[tch.Tensor, tch.Tensor, float]:
         """
         Compute soft-argmax expectation along the last axis.
@@ -94,13 +94,13 @@ class Preprocessor(nn.Module):
         return expectation, conf.clamp(0.01, 1.0), tch.tensor([bins.shape[0]], device=prob.device)
 
     def forward(
-        self,
-        depth: tch.Tensor,
-        simcc_x: tch.Tensor,
-        simcc_y: tch.Tensor,
-        simcc_z: tch.Tensor,
-        K_inv: tch.Tensor,
-        bypass_root_center: ty.Optional[tch.Tensor] = None,
+            self,
+            depth: tch.Tensor,
+            simcc_x: tch.Tensor,
+            simcc_y: tch.Tensor,
+            simcc_z: tch.Tensor,
+            K_inv_dense: tch.Tensor,
+            bypass_root_center: ty.Optional[tch.Tensor] = None,
     ):
         # Enforce consistent hand scale at the cost of wrist inaccuracy, if we can't see the hand we don't really care where the wrist is anyway
         simcc_x[:, 9] = simcc_x[:, 91]
@@ -122,7 +122,16 @@ class Preprocessor(nn.Module):
             dim=-1,
         )  # [B, K, 3]
 
-        rays = tch.bmm(K_inv, uvz.transpose(2, 1)).transpose(1, 2)  # [B,K,3]
+        uv_only = tch.cat([u_px, v_px], dim=-1)
+        alpha_xy = K_inv_dense[:, 0:1, :]
+        beta_xy = K_inv_dense[:, 1:2, :]
+
+        rays_alt = uv_only * alpha_xy + beta_xy
+        rays = tch.cat([rays_alt, tch.ones(u_px.shape, device=u_px.device, dtype=u_px.dtype)], dim=-1)
+
+        # Changed input to be a dense 2x2 mat which stacks alpha and beta on the channel dimension so that per-channel
+        #   quantization is more accurate, see above
+        # rays = tch.bmm(K_inv, uvz.transpose(2, 1)).transpose(1, 2)  # [B,K,3]
 
         torso_derived_from = tch.tensor([5, 6, 11, 12], device=uvz.device)
         torso_root = tch.mean(uvz[:, torso_derived_from, :], dim=1, keepdim=True)
@@ -134,7 +143,7 @@ class Preprocessor(nn.Module):
 
         get_patches_for = tch.cat([uvz[:, coco_main_kps, :], torso_root], dim=1)
         all_pcl, _ = extract_pcl_patches(
-            depth, get_patches_for[:, :, :2], K_inv
+            depth, get_patches_for[:, :, :2], K_inv_dense=K_inv_dense
         )  # [B, 19 + 1, P, 3]
 
         torso_root_pcl = all_pcl[:, -1, :, :].squeeze(1)  # [B, P, 3]
@@ -155,8 +164,8 @@ class Preprocessor(nn.Module):
             )[:, 2:]
 
         pose_init_centered = (
-            rays[:, coco_main_kps, :] * torso_for_rest[:, :, 2:]
-        ) - torso_for_rest
+                                     rays[:, coco_main_kps, :] * torso_for_rest[:, :, 2:]
+                             ) - torso_for_rest
 
         # TODO these are the original box params but I want to re-tune them
         coco_main_pcl_norm = (coco_main_pcl - torso_for_rest.unsqueeze(1)) / tch.tensor(

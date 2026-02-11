@@ -113,11 +113,11 @@ def depth_to_rgbz_image(
     return rgbz  # [B,1,Hrgb,Wrgb]
 
 
-def extract_pcl_patches(depth, uv_px, intrinsic_inv_K, window=3):
+def extract_pcl_patches(depth, uv_px, intrinsic_inv_K=None, K_inv_dense=None, window=3):
     """
     depth: [B, 1, H, W]
     uv_px: [B, K, 2] pixel coords (float or int, in pixel units)
-    intrinsic_K: [3, 3] or [B, 3, 3] camera intrinsics
+    intrinsic_K: [B, 3, 3] camera intrinsics
         [[fx, 0, cx],
          [0, fy, cy],
          [0,  0,  1]]
@@ -162,11 +162,6 @@ def extract_pcl_patches(depth, uv_px, intrinsic_inv_K, window=3):
     patch_depth = depth_flat.gather(1, lin_idx)  # [B, K*P]
     patch_depth = patch_depth.view(B, K_pts, P)  # [B, K, P]
 
-    # UV -> XYZ via K^{-1} and batched matmul
-    intrinsic_inv_K = intrinsic_inv_K.to(device=device, dtype=dtype)
-    if intrinsic_inv_K.dim() == 2:
-        intrinsic_inv_K = intrinsic_inv_K.unsqueeze(0).expand(B, -1, -1)  # [B, 3, 3]
-
     # Build homogeneous pixel coords [u, v, 1] for each patch element
     uv_float = uv_idx.view(B, -1, 2).to(dtype)  # [B, K*P, 2]
     ones = tch.ones(
@@ -174,10 +169,12 @@ def extract_pcl_patches(depth, uv_px, intrinsic_inv_K, window=3):
     )  # [B, K*P, 1]
     pix_h = tch.cat([uv_float, ones], dim=-1)  # [B, K*P, 3]
 
-    # Apply K^{-1}: pix_h * K_inv^T -> [B, K*P, 3]
-    cam_dirs = tch.matmul(intrinsic_inv_K.unsqueeze(1), pix_h.unsqueeze(-1)).squeeze(
-        -1
-    )  # [B, K*P, 3]
+    if K_inv_dense is not None and intrinsic_inv_K is None:
+        cam_dirs = tch.cat([uv_float * K_inv_dense[..., 0:1, :] + K_inv_dense[..., 1:2, :],ones], dim=-1)
+    else:
+        cam_dirs = tch.matmul(intrinsic_inv_K.unsqueeze(1), pix_h.unsqueeze(-1)).squeeze(
+            -1
+        )  # [B, K*P, 3]
 
     # Scale by depth to get XYZ
     z_flat = patch_depth.view(B, K_pts * P, 1)  # [B, K*P, 1]
