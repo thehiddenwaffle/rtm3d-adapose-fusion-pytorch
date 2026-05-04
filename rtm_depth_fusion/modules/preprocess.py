@@ -133,7 +133,7 @@ class Preprocessor(nn.Module):
         #   quantization is more accurate, see above
         # rays = tch.bmm(K_inv, uvz.transpose(2, 1)).transpose(1, 2)  # [B,K,3]
 
-        torso_derived_from = tch.tensor([5, 6, 11, 12], device=uvz.device)
+        torso_derived_from = tch.tensor([5, 6, 7, 8], device=uvz.device)
         torso_root = tch.mean(uvz[:, torso_derived_from, :], dim=1, keepdim=True)
 
         coco_main_kps = tch.tensor(

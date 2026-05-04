@@ -41,7 +41,7 @@ def export_depth_fusion_net_to_onnx(model_path, output_onnx_path="_ada_post.onnx
     depth_height, depth_width = 384, 288
 
     # Create example inputs
-    depth = tch.randn(batch_size, 1, depth_height, depth_width, device=device)  # Depth map
+    depth = tch.randint(500, 4500, ( batch_size, 1, depth_height, depth_width ), device=device).to(tch.float32)  # Depth map
     simcc_x = tch.randn(batch_size, num_keypoints, depth_width * 2, device=device)  # SimCC X heatmap
     simcc_y = tch.randn(batch_size, num_keypoints, depth_height * 2, device=device)  # SimCC Y heatmap
     simcc_z = tch.randn(batch_size, num_keypoints, depth_width * 2, device=device)  # SimCC Z heatmap
@@ -59,8 +59,8 @@ def export_depth_fusion_net_to_onnx(model_path, output_onnx_path="_ada_post.onnx
 
     # Export the model
     tch.onnx.export(
-        post_model.half(),
-        (depth.half(), simcc_x.half(), simcc_y.half(), simcc_z.half(), camera_K_inv_squashed.half()),
+        post_model,
+        (depth, simcc_x, simcc_y, simcc_z, camera_K_inv_squashed),
         output_onnx_path,
         export_params=True,
         # external_data=True,
@@ -81,14 +81,14 @@ def combine_models(
 ) -> None:
     pose_model = onnx.load(pose_path)
     # If it's this easy why is there even an error on mismatch????????
-    # pose_model.ir_version = 10
+    pose_model.ir_version = 6
 
     depth_model = export_depth_fusion_net_to_onnx(ckpt_path)
 
     io_map = list(zip(pose_output_names, ("simcc_x", "simcc_y", "simcc_z")))
 
     merged = compose.merge_models(
-        add_prefix(pose_model, "rtm_", rename_edges=False, rename_inputs=False, rename_outputs=False),
+        add_prefix(pose_model, "rtm_", rename_edges=True, rename_inputs=False, rename_outputs=False),
         add_prefix(depth_model, "ada_", rename_edges=False, rename_inputs=False, rename_outputs=False),
         io_map=io_map,
     )
@@ -101,12 +101,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--pose",
-        default="./end2end_mmdeploy_rtmpose3d_subbed_ops.onnx",
+        default="./rtmw3d-l_fixedops_fp32.onnx",
         help="Path to the RTMPose SimCC ONNX file.",
     )
     parser.add_argument(
         "--ada-weights",
-        default="../../ckpts_rtm_ada/epoch_026.pt",
+        default="../../ckpts_rtm_ada/epoch_034.pt",
         help="Path to the ada checkpoint.",
     )
     parser.add_argument(
@@ -116,7 +116,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--simcc-names",
-        default=["output", "1338", "1340"],
+        default=["rtm_output", "rtm_1343", "rtm_1345"],
         help="3 Names of the RTMPose output tensor that represents SimCC X.",
     )
     return parser.parse_args()
