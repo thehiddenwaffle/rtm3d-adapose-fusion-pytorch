@@ -7,7 +7,14 @@ import torch as tch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
 
-DEFAULT_IMAGE_SIZE = (288, 384)
+DEFAULT_IMAGE_SIZE = (288, 384)  # (W, H) — portrait, matches EgoBody convention
+
+# overhead keypoint index k → RTMPose3D 133-joint simcc index
+_SIMCC_IDX = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 100, 121]
+
+_N_X = 576   # W * 2 = 288 * 2
+_N_Y = 768   # H * 2 = 384 * 2
+_N_Z = 576   # matches EgoBody z bins
 
 
 class OverheadItem(ty.NamedTuple):
@@ -16,6 +23,9 @@ class OverheadItem(ty.NamedTuple):
     K: tch.Tensor
     K_inv: tch.Tensor
     kps19_cam: tch.Tensor
+    simcc_x: tch.Tensor
+    simcc_y: tch.Tensor
+    simcc_z: tch.Tensor
     image_id: ty.List[int]
     ann_id: ty.List[int]
 
@@ -63,6 +73,11 @@ def _build_K(fx: float, fy: float, cx: float, cy: float) -> tch.Tensor:
     )
 
 
+def _simcc_spike(center_bin: float, n_bins: int, sigma: float = 2.5) -> tch.Tensor:
+    bins = tch.arange(n_bins, dtype=tch.float32)
+    return tch.exp(-0.5 * ((bins - center_bin) / sigma) ** 2)
+
+
 class OverheadMinDataset(Dataset):
     def __init__(
         self,
@@ -71,7 +86,7 @@ class OverheadMinDataset(Dataset):
     ):
         super().__init__()
         self.root = root
-        self.img_size = img_size  # (H, W)
+        self.img_size = img_size  # (W, H)
 
         with open(osp.join(root, "calibration.json")) as f:
             cal = json.load(f)
@@ -102,9 +117,9 @@ class OverheadMinDataset(Dataset):
         depth_np = np.load(
             osp.join(self.root, "depth", f"{image_id:06d}.npy")
         ).astype(np.float32)
-        depth = tch.from_numpy(depth_np).unsqueeze(0)  # [1, H, W]
+        depth = tch.from_numpy(depth_np).unsqueeze(0)  # [1, H_src, W_src]
 
-        H_out, W_out = self.img_size
+        W_out, H_out = self.img_size
         depth_crop = depth[
             :,
             round(y0) : round(y0 + h),
@@ -122,8 +137,37 @@ class OverheadMinDataset(Dataset):
         )
         K_inv = tch.linalg.inv(K)
 
-        kps = np.array(ann["keypoints_3d"], dtype=np.float32).reshape(19, 4)
-        kps19_cam = tch.from_numpy(kps[:, :3] / 1000.0).unsqueeze(0)  # mm → m, [1,19,3]
+        kps3d = np.array(ann["keypoints_3d"], dtype=np.float32).reshape(19, 4)
+        kps19_cam = tch.from_numpy(kps3d[:, :3] / 1000.0).unsqueeze(0)  # mm → m, [1,19,3]
+
+        # Synthesize SimCC heatmaps from 2D annotations
+        kps2d = np.array(ann["keypoints"], dtype=np.float32).reshape(19, 3)  # [x, y, v]
+        kps2d_out = kps2d.copy()
+        kps2d_out[:, 0] = (kps2d[:, 0] - x0) * sx   # x in output space
+        kps2d_out[:, 1] = (kps2d[:, 1] - y0) * sy   # y in output space
+
+        n_x = W_out * 2
+        n_y = H_out * 2
+        n_z = _N_Z
+
+        simcc_x = tch.zeros(1, 133, n_x)
+        simcc_y = tch.zeros(1, 133, n_y)
+        simcc_z = tch.zeros(1, 133, n_z)
+
+        # Per-sample random linear transform for Z (teaches general depth, not exact scale)
+        z_scale = float(np.random.uniform(0.7, 1.4))
+        z_offset = float(np.random.uniform(-n_z * 0.1, n_z * 0.1))
+
+        for k, simcc_idx in enumerate(_SIMCC_IDX):
+            x_out, y_out, vis = kps2d_out[k]
+            if vis <= 0:
+                continue
+            simcc_x[0, simcc_idx] = _simcc_spike(x_out * 2, n_x)
+            simcc_y[0, simcc_idx] = _simcc_spike(y_out * 2, n_y)
+
+            z_mm = float(kps3d[k, 2])  # already mm from dataset
+            bin_z = float(np.clip(z_mm / 5000.0 * n_z * z_scale + n_z / 2 + z_offset, 0, n_z - 1))
+            simcc_z[0, simcc_idx] = _simcc_spike(bin_z, n_z)
 
         return OverheadItem(
             valid_entry=tch.tensor([True]),
@@ -131,6 +175,9 @@ class OverheadMinDataset(Dataset):
             K=K.unsqueeze(0),
             K_inv=K_inv.unsqueeze(0),
             kps19_cam=kps19_cam,
+            simcc_x=simcc_x,
+            simcc_y=simcc_y,
+            simcc_z=simcc_z,
             image_id=[image_id],
             ann_id=[ann_id],
         )
