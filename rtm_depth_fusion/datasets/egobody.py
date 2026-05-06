@@ -312,6 +312,24 @@ def _apply_transform(points: np.ndarray, T: ty.Optional[np.ndarray]) -> np.ndarr
     return transformed[:, :3]
 
 
+def _flip_vertical(item: "EgoBodyItem", img_h: int) -> "EgoBodyItem":
+    depth = tch.flip(item.depth, dims=[-2])
+    simcc_y = tch.flip(item.simcc_y, dims=[-1])
+    kps = item.kps133_cam.clone()
+    kps[..., 1] = -kps[..., 1]
+    K = item.K.clone()
+    K[:, 1, 2] = img_h - 1 - K[:, 1, 2]
+    K_inv = tch.linalg.inv(K)
+    return EgoBodyItem(
+        valid_entry=item.valid_entry,
+        depth=depth, K=K, K_inv=K_inv, kps133_cam=kps,
+        simcc_x=item.simcc_x, simcc_y=simcc_y, simcc_z=item.simcc_z,
+        recording=item.recording, frame_id=item.frame_id, camera=item.camera,
+        depth_path=item.depth_path, smplx_pkl_path=item.smplx_pkl_path,
+        subject_label=item.subject_label,
+    )
+
+
 # noinspection PyPep8Naming
 def depth_resize_stretch(depth, W_out, H_out):
     # depth: (..., H, W)
@@ -332,6 +350,7 @@ class EgoBodyDataset(Dataset):
         output_root: str = DEFAULT_OUTPUT_ROOT,
         img_size: ty.Tuple[int, int] = DEFAULT_IMAGE_SIZE,
         depth_scale: float = DEFAULT_DEPTH_SCALE,
+        augment: bool = True,
     ):
         super().__init__()
         self.release_root = release_root
@@ -339,6 +358,7 @@ class EgoBodyDataset(Dataset):
         self.img_size = img_size
         self.output_root = output_root
         self.depth_scale = float(depth_scale)
+        self.augment = augment
 
         self.depth_root = osp.join(release_root, "kinect_depth")
         self.color_root = osp.join(release_root, "kinect_color")
@@ -460,7 +480,10 @@ class EgoBodyDataset(Dataset):
         cam_wearer = one_subject("camera_wearer")
         interactee = one_subject("interactee")
 
-        return EgoBodyItem.collate([cam_wearer, interactee])
+        result = EgoBodyItem.collate([cam_wearer, interactee])
+        if self.augment and bool(tch.all(result.valid_entry)) and tch.rand(1).item() < 0.5:
+            result = _flip_vertical(result, self.img_size[1])
+        return result
 
     # ------------------------------------------------------------------
     # Internal helpers
