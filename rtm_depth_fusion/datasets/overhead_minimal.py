@@ -292,9 +292,10 @@ class OverheadMinDataset(Dataset):
         simcc_x, simcc_y, simcc_z = _make_simcc(kps2d_out, kps3d, n_x, n_y, n_z, W_out, H_out)
 
         if did_hflip:
-            simcc_x = tch.flip(simcc_x, dims=[-1])
-            simcc_x = _swap_pairs(simcc_x, _SIMCC133_HFLIP_PAIRS, dim=1)
-            simcc_y = _swap_pairs(simcc_y, _SIMCC133_HFLIP_PAIRS, dim=1)
+            # simcc_x/y bins are already correct: _make_simcc used the flipped kps2d_out
+            # (x-mirrored, rows swapped), so each channel already has its spike at the
+            # right position. Only simcc_z needs the channel swap because kps3d is never
+            # reordered, so Z values land in the wrong channels after the row swap.
             simcc_z = _swap_pairs(simcc_z, _SIMCC133_HFLIP_PAIRS, dim=1)
 
         return OverheadItem(
