@@ -186,10 +186,13 @@ def _apply_rotation(
     kps19_cam = kps19_cam @ R_z.T  # [1, 19, 3]
 
     # Re-project rotated keypoints to pixel space to rebuild kps2d_out.
+    # Clamp to frame bounds so originally-visible keypoints always produce a
+    # valid SimCC spike — letting them go out-of-range yields all-zero SimCC,
+    # which makes equal soft-argmax outputs and a zero denominator in adapose.py.
     pts = kps19_cam[0]  # [19, 3] metres
     z = pts[:, 2].clamp(min=1e-6)
-    u = (K[0, 0] * pts[:, 0] / z + K[0, 2]).numpy()
-    v = (K[1, 1] * pts[:, 1] / z + K[1, 2]).numpy()
+    u = np.clip((K[0, 0] * pts[:, 0] / z + K[0, 2]).numpy(), 0, W_out - 1)
+    v = np.clip((K[1, 1] * pts[:, 1] / z + K[1, 2]).numpy(), 0, H_out - 1)
     kps2d_out = np.stack([u, v, kps_vis.astype(np.float32)], axis=1)
 
     return depth, kps19_cam, kps2d_out
