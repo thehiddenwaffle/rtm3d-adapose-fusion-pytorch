@@ -169,11 +169,18 @@ def _apply_rotation(
     cos_a = math.cos(a)
     sin_a = math.sin(a)
 
-    # Rotate depth image around its centre using affine sampling.
-    # theta maps output normalised coords → input normalised coords,
-    # so content appears rotated CCW by `a` in pixel space (Y-down).
+    # Rotate depth image around the principal point (cx, cy) rather than the
+    # image centre.  Rotating around (cx, cy) keeps K valid: the depth value
+    # that lands at projected pixel (u', v') is exactly the Z of the rotated
+    # 3D point (assuming fx ≈ fy, which holds for all real depth cameras).
+    # Rotating around the image centre instead introduces an error proportional
+    # to (cx − W/2) and (cy − H/2) — eliminated here via the tx/ty terms.
+    cx_n = 2.0 * K[0, 2].item() / W_out - 1.0  # cx in normalised [-1, 1]
+    cy_n = 2.0 * K[1, 2].item() / H_out - 1.0  # cy in normalised [-1, 1]
+    t0 = cx_n - cos_a * cx_n - sin_a * cy_n
+    t1 = cy_n + sin_a * cx_n - cos_a * cy_n
     theta = tch.tensor(
-        [[cos_a, sin_a, 0.0], [-sin_a, cos_a, 0.0]], dtype=tch.float32
+        [[cos_a, sin_a, t0], [-sin_a, cos_a, t1]], dtype=tch.float32
     ).unsqueeze(0)
     grid = F.affine_grid(theta, depth.shape, align_corners=False)
     depth = F.grid_sample(depth, grid, mode="bilinear", padding_mode="zeros", align_corners=False)
