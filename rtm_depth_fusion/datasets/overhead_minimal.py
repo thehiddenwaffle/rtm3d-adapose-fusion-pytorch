@@ -1,5 +1,4 @@
 import json
-import math
 import os.path as osp
 import typing as ty
 
@@ -17,14 +16,9 @@ _N_X = 576   # W * 2 = 288 * 2
 _N_Y = 768   # H * 2 = 384 * 2
 _N_Z = 576   # matches EgoBody z bins
 
-# Left↔right symmetric joint pairs for horizontal flip.
-# _KPS19_HFLIP_PAIRS: indices into the 19-joint array.
-# _SIMCC133_HFLIP_PAIRS: corresponding indices in the 133-joint SimCC channel dim.
-# Joints 17/18 map to simcc 100/121 (matching hand joints, right↔left).
-_KPS19_HFLIP_PAIRS    = [(1, 2), (3, 4), (5, 6), (7, 8), (9, 10),
-                          (11, 12), (13, 14), (15, 16), (17, 18)]
-_SIMCC133_HFLIP_PAIRS = [(1, 2), (3, 4), (5, 6), (7, 8), (9, 10),
-                          (11, 12), (13, 14), (15, 16), (100, 121)]
+# Keypoint local indices excluded from bbox derivation (lower-leg / feet)
+_BBOX_EXCLUDE = frozenset({13, 14, 15, 16})
+_BBOX_KPS = np.array([i not in _BBOX_EXCLUDE for i in range(19)])
 
 
 class OverheadItem(ty.NamedTuple):
@@ -83,126 +77,44 @@ def _build_K(fx: float, fy: float, cx: float, cy: float) -> tch.Tensor:
     )
 
 
+def _rotate_depth(depth: tch.Tensor, angle_deg: float, cx: float, cy: float,
+                  W: int, H: int) -> tch.Tensor:
+    """Rotate [1,1,H,W] depth around pixel (cx,cy) by angle_deg (true pixel-space rotation).
+
+    affine_grid normalises x over W and y over H independently, so a naive rotation
+    in that space shears when W != H.  Scaling the off-diagonal terms by ar=H/W
+    and 1/ar corrects for the aspect ratio.
+    """
+    theta = np.radians(angle_deg)
+    c, s = float(np.cos(theta)), float(np.sin(theta))
+    cx_n = 2.0 * cx / W - 1.0
+    cy_n = 2.0 * cy / H - 1.0
+    ar = float(H) / float(W)
+    mat = tch.tensor([[c,       s * ar,  cx_n * (1 - c) - cy_n * s * ar],
+                      [-s / ar, c,       cy_n * (1 - c) + cx_n * s / ar]],
+                     dtype=tch.float32).unsqueeze(0)
+    grid = F.affine_grid(mat, depth.shape, align_corners=False)
+    return F.grid_sample(depth.float(), grid, mode="bilinear",
+                         align_corners=False, padding_mode="zeros")
+
+
+def _rotate_K(K_np: np.ndarray, angle_deg: float) -> tch.Tensor:
+    """Return new 3×3 intrinsic matrix after in-plane rotation by angle_deg."""
+    theta = np.radians(angle_deg)
+    c, s = np.cos(theta), np.sin(theta)
+    cx, cy = K_np[0, 2], K_np[1, 2]
+    H_img = np.array([[c, -s, cx * (1 - c) + cy * s],
+                      [s,  c, cy * (1 - c) - cx * s],
+                      [0,  0, 1]], dtype=np.float32)
+    R3d_T = np.array([[c,  s, 0],
+                      [-s, c, 0],
+                      [0,  0, 1]], dtype=np.float32)
+    return tch.from_numpy(H_img @ K_np @ R3d_T)
+
+
 def _simcc_spike(center_bin: float, n_bins: int, sigma: float = 2.5) -> tch.Tensor:
     bins = tch.arange(n_bins, dtype=tch.float32)
     return tch.exp(-0.5 * ((bins - center_bin) / sigma) ** 2)
-
-
-def _swap_pairs(t: tch.Tensor, pairs: ty.List[ty.Tuple[int, int]], dim: int) -> tch.Tensor:
-    t = t.clone()
-    for a, b in pairs:
-        sel_a = [slice(None)] * t.ndim
-        sel_b = [slice(None)] * t.ndim
-        sel_a[dim] = a
-        sel_b[dim] = b
-        tmp = t[tuple(sel_a)].clone()
-        t[tuple(sel_a)] = t[tuple(sel_b)]
-        t[tuple(sel_b)] = tmp
-    return t
-
-
-def _make_simcc(
-    kps2d_out: np.ndarray,
-    kps3d: np.ndarray,
-    n_x: int,
-    n_y: int,
-    n_z: int,
-    W_out: int,
-    H_out: int,
-) -> ty.Tuple[tch.Tensor, tch.Tensor, tch.Tensor]:
-    simcc_x = tch.zeros(1, 133, n_x)
-    simcc_y = tch.zeros(1, 133, n_y)
-    simcc_z = tch.zeros(1, 133, n_z)
-
-    z_scale = float(np.random.uniform(0.7, 1.4))
-    z_offset = float(np.random.uniform(-n_z * 0.1, n_z * 0.1))
-
-    for k, simcc_idx in enumerate(_SIMCC_IDX):
-        x_out, y_out, vis = kps2d_out[k]
-        if vis <= 0 or not (0 <= x_out < W_out and 0 <= y_out < H_out):
-            continue
-        simcc_x[0, simcc_idx] = _simcc_spike(x_out * 2, n_x)
-        simcc_y[0, simcc_idx] = _simcc_spike(y_out * 2, n_y)
-
-        z_mm = float(kps3d[k, 2])
-        bin_z = float(np.clip(z_mm / 5000.0 * n_z * z_scale + n_z / 2 + z_offset, 0, n_z - 1))
-        simcc_z[0, simcc_idx] = _simcc_spike(bin_z, n_z)
-
-    return simcc_x, simcc_y, simcc_z
-
-
-def _apply_hflip_geom(
-    depth: tch.Tensor,
-    kps2d_out: np.ndarray,
-    kps19_cam: tch.Tensor,
-    K: tch.Tensor,
-    W_out: int,
-) -> ty.Tuple[tch.Tensor, np.ndarray, tch.Tensor, tch.Tensor, tch.Tensor]:
-    depth = tch.flip(depth, dims=[-1])
-
-    kps2d_out = kps2d_out.copy()
-    kps2d_out[:, 0] = W_out - 1 - kps2d_out[:, 0]
-    for a, b in _KPS19_HFLIP_PAIRS:
-        kps2d_out[[a, b]] = kps2d_out[[b, a]]
-
-    kps19_cam = kps19_cam.clone()
-    kps19_cam[..., 0] = -kps19_cam[..., 0]
-    kps19_cam = _swap_pairs(kps19_cam, _KPS19_HFLIP_PAIRS, dim=-2)
-
-    K = K.clone()
-    K[0, 2] = W_out - 1 - K[0, 2]
-    K_inv = tch.linalg.inv(K)
-
-    return depth, kps2d_out, kps19_cam, K, K_inv
-
-
-def _apply_rotation(
-    depth: tch.Tensor,
-    kps19_cam: tch.Tensor,
-    K: tch.Tensor,
-    angle_deg: float,
-    W_out: int,
-    H_out: int,
-    kps_vis: np.ndarray,
-) -> ty.Tuple[tch.Tensor, tch.Tensor, np.ndarray]:
-    a = math.radians(angle_deg)
-    cos_a = math.cos(a)
-    sin_a = math.sin(a)
-
-    # Rotate depth image around the principal point (cx, cy) rather than the
-    # image centre.  Rotating around (cx, cy) keeps K valid: the depth value
-    # that lands at projected pixel (u', v') is exactly the Z of the rotated
-    # 3D point (assuming fx ≈ fy, which holds for all real depth cameras).
-    # Rotating around the image centre instead introduces an error proportional
-    # to (cx − W/2) and (cy − H/2) — eliminated here via the tx/ty terms.
-    cx_n = 2.0 * K[0, 2].item() / W_out - 1.0  # cx in normalised [-1, 1]
-    cy_n = 2.0 * K[1, 2].item() / H_out - 1.0  # cy in normalised [-1, 1]
-    t0 = cx_n - cos_a * cx_n - sin_a * cy_n
-    t1 = cy_n + sin_a * cx_n - cos_a * cy_n
-    theta = tch.tensor(
-        [[cos_a, sin_a, t0], [-sin_a, cos_a, t1]], dtype=tch.float32
-    ).unsqueeze(0)
-    grid = F.affine_grid(theta, depth.shape, align_corners=False)
-    depth = F.grid_sample(depth, grid, mode="bilinear", padding_mode="zeros", align_corners=False)
-
-    # Rotate 3D keypoints around the optical (Z) axis by the same angle.
-    # R_z(a) @ p rotates X toward -Y (CCW in image), consistent with the depth rotation above.
-    R_z = tch.tensor(
-        [[cos_a, -sin_a, 0.0], [sin_a, cos_a, 0.0], [0.0, 0.0, 1.0]], dtype=tch.float32
-    )
-    kps19_cam = kps19_cam @ R_z.T  # [1, 19, 3]
-
-    # Re-project rotated keypoints to pixel space to rebuild kps2d_out.
-    # Clamp to frame bounds so originally-visible keypoints always produce a
-    # valid SimCC spike — letting them go out-of-range yields all-zero SimCC,
-    # which makes equal soft-argmax outputs and a zero denominator in adapose.py.
-    pts = kps19_cam[0]  # [19, 3] metres
-    z = pts[:, 2].clamp(min=1e-6)
-    u = np.clip((K[0, 0] * pts[:, 0] / z + K[0, 2]).numpy(), 0, W_out - 1)
-    v = np.clip((K[1, 1] * pts[:, 1] / z + K[1, 2]).numpy(), 0, H_out - 1)
-    kps2d_out = np.stack([u, v, kps_vis.astype(np.float32)], axis=1)
-
-    return depth, kps19_cam, kps2d_out
 
 
 class OverheadMinDataset(Dataset):
@@ -239,71 +151,138 @@ class OverheadMinDataset(Dataset):
     def __getitem__(self, idx: int) -> OverheadItem:
         image_id, ann_id, ann = self._entries[idx]
 
-        x0, y0, w, h = ann["bbox"]
-        if w < 15 or h < 15:
-            return _invalid_overhead
-
         depth_np = np.load(
             osp.join(self.root, "depth", f"{image_id:06d}.npy")
         ).astype(np.float32)
-        depth = tch.from_numpy(depth_np).unsqueeze(0)  # [1, H_src, W_src]
-
-        W_out, H_out = self.img_size
-        depth_crop = depth[
-            :,
-            round(y0) : round(y0 + h),
-            round(x0) : round(x0 + w),
-        ]
-        depth_resized = _depth_resize(depth_crop, H_out, W_out).unsqueeze(0)  # [1,1,H,W]
-
-        sx = W_out / w
-        sy = H_out / h
-        K = _build_K(
-            fx=self._fx * sx,
-            fy=self._fy * sy,
-            cx=(self._cx - x0) * sx,
-            cy=(self._cy - y0) * sy,
-        )
-        K_inv = tch.linalg.inv(K)
+        H_full, W_full = depth_np.shape
 
         kps3d = np.array(ann["keypoints_3d"], dtype=np.float32).reshape(19, 4)
-        kps19_cam = tch.from_numpy(kps3d[:, :3] / 1000.0).unsqueeze(0)  # mm→m, [1,19,3]
+        kps2d = np.array(ann["keypoints"],    dtype=np.float32).reshape(19, 3)
 
-        kps2d = np.array(ann["keypoints"], dtype=np.float32).reshape(19, 3)  # [x, y, v]
-        kps2d_out = kps2d.copy()
-        kps2d_out[:, 0] = (kps2d[:, 0] - x0) * sx
-        kps2d_out[:, 1] = (kps2d[:, 1] - y0) * sy
+        # derive bbox from visible keypoints, excluding lower-leg/feet (kps 13-16)
+        vis = (kps2d[:, 2] > 0) & _BBOX_KPS
+        if not vis.any():
+            return _invalid_overhead
+        px, py = kps2d[vis, 0], kps2d[vis, 1]
+        span = max(float(px.max() - px.min()), float(py.max() - py.min()), 1.0)
+        pad = span * 0.1
+        x0 = float(np.clip(px.min() - pad, 0, W_full))
+        y0 = float(np.clip(py.min() - pad, 0, H_full))
+        x1 = float(np.clip(px.max() + pad, 0, W_full))
+        y1 = float(np.clip(py.max() + pad, 0, H_full))
+        w, h = x1 - x0, y1 - y0
+        if w < 15 or h < 15:
+            return _invalid_overhead
 
-        # --- Augmentation ---
-        did_hflip = False
-        applied_angle = 0.0
-        if self.augment and np.random.random() < 0.5:
-            depth_resized, kps2d_out, kps19_cam, K, K_inv = _apply_hflip_geom(
-                depth_resized, kps2d_out, kps19_cam, K, W_out
-            )
-            did_hflip = True
+        depth = tch.from_numpy(depth_np).unsqueeze(0)  # [1, H_src, W_src]
+        W_out, H_out = self.img_size
+
+        K_full_np = np.array(
+            [[self._fx, 0.0, self._cx],
+             [0.0, self._fy, self._cy],
+             [0.0,      0.0,      1.0]], dtype=np.float32)
 
         if self.augment:
-            angle = float(np.random.uniform(-90.0, 90.0))
-            if abs(angle) > 0.5:
-                depth_resized, kps19_cam, kps2d_out = _apply_rotation(
-                    depth_resized, kps19_cam, K, angle, W_out, H_out, kps2d_out[:, 2]
-                )
-                applied_angle = angle
+            angle_deg = float(np.random.uniform(-80.0, 80.0))
+            theta = np.radians(angle_deg)
+            c, s = float(np.cos(theta)), float(np.sin(theta))
 
-        # --- Generate SimCC heatmaps from final keypoint positions ---
+            # 1. rotate full depth frame around full-frame principal point
+            depth_full = depth.unsqueeze(0)  # [1,1,H_full,W_full]
+            depth = _rotate_depth(
+                depth_full, angle_deg, self._cx, self._cy, W_full, H_full
+            )[0]  # [1,H_full,W_full]
+
+            # 2. rotate 3D keypoints (Z unchanged)
+            kps3d_rot = kps3d.copy()
+            kps3d_rot[:, 0] = kps3d[:, 0] * c - kps3d[:, 1] * s
+            kps3d_rot[:, 1] = kps3d[:, 0] * s + kps3d[:, 1] * c
+            kps3d = kps3d_rot
+
+            # 3. rotate 2D keypoints in full-frame space
+            kps2d_rot = kps2d.copy()
+            u = kps2d[:, 0] - self._cx
+            v = kps2d[:, 1] - self._cy
+            kps2d_rot[:, 0] = self._cx + c * u - s * v
+            kps2d_rot[:, 1] = self._cy + s * u + c * v
+            kps2d = kps2d_rot
+
+            # 4. tight bbox from rotated visible keypoints, excluding lower-leg/feet
+            vis_r = (kps2d[:, 2] > 0) & _BBOX_KPS
+            if not vis_r.any():
+                return _invalid_overhead
+            px_r, py_r = kps2d[vis_r, 0], kps2d[vis_r, 1]
+            span_r = max(float(px_r.max() - px_r.min()), float(py_r.max() - py_r.min()), 1.0)
+            pad_r  = span_r * 0.1
+            rx0 = float(np.clip(px_r.min() - pad_r, 0, W_full))
+            ry0 = float(np.clip(py_r.min() - pad_r, 0, H_full))
+            rx1 = float(np.clip(px_r.max() + pad_r, 0, W_full))
+            ry1 = float(np.clip(py_r.max() + pad_r, 0, H_full))
+            rw  = max(rx1 - rx0, 1.0)
+            rh  = max(ry1 - ry0, 1.0)
+
+            # 5. rotate full-frame K
+            K_rot_np = _rotate_K(K_full_np, angle_deg).numpy()
+        else:
+            rx0, ry0, rw, rh = x0, y0, w, h
+            K_rot_np = K_full_np
+
+        # crop rotated depth, resize to NN input size
+        depth_crop    = depth[:, round(ry0):round(ry0 + rh), round(rx0):round(rx0 + rw)]
+        depth_resized = _depth_resize(depth_crop, H_out, W_out).unsqueeze(0)  # [1,1,H,W]
+
+        # K: crop+scale applied on top of (possibly rotated) full-frame K
+        sx = W_out / rw
+        sy = H_out / rh
+        crop_scale = np.array(
+            [[sx,  0.0, -rx0 * sx],
+             [0.0, sy,  -ry0 * sy],
+             [0.0, 0.0,       1.0]], dtype=np.float32)
+        K     = tch.from_numpy(crop_scale @ K_rot_np)
+        K_inv = tch.linalg.inv(K)
+
+        # map (possibly rotated) full-frame 2D kps into output space;
+        # clamp out-of-bounds to nearest edge (visibility preserved)
+        kps2d_out = kps2d.copy()
+        kps2d_out[:, 0] = np.clip((kps2d[:, 0] - rx0) * sx, 0, W_out - 1)
+        kps2d_out[:, 1] = np.clip((kps2d[:, 1] - ry0) * sy, 0, H_out - 1)
+
+        # Derive kps19_cam by back-projecting clamped output UV at each keypoint's depth.
+        # OOB keypoints are smushed to the nearest boundary ray; Z is unchanged.
+        K_inv_np = K_inv.numpy()
+        vis2d = kps2d[:, 2] > 0                                     # [19]
+        uvh = np.stack([kps2d_out[:, 0], kps2d_out[:, 1],
+                        np.ones(19, dtype=np.float32)], axis=0)      # [3,19]
+        rays = K_inv_np @ uvh                                        # [3,19]  (X/Z, Y/Z, 1)
+        Z_m  = kps3d[:, 2] / 1000.0                                  # [19]  depth in metres
+        kps19_cam_np = (rays * Z_m[np.newaxis, :]).T.astype(np.float32)  # [19,3]
+        kps19_cam_np[~vis2d] = 0.0
+        kps19_cam = tch.from_numpy(kps19_cam_np).unsqueeze(0)        # [1,19,3]
+
+        # Synthesize SimCC heatmaps from 2D annotations
+
         n_x = W_out * 2
         n_y = H_out * 2
         n_z = _N_Z
 
-        simcc_x, simcc_y, simcc_z = _make_simcc(kps2d_out, kps3d, n_x, n_y, n_z, W_out, H_out)
+        simcc_x = tch.zeros(1, 133, n_x)
+        simcc_y = tch.zeros(1, 133, n_y)
+        simcc_z = tch.zeros(1, 133, n_z)
 
-        if did_hflip:
-            # simcc_x/y bins are already correct: _make_simcc used the flipped kps2d_out
-            # (x-mirrored, rows swapped), so each channel already has its spike at the
-            # right position. Only simcc_z needs the channel swap because kps3d is never
-            # reordered, so Z values land in the wrong channels after the row swap.
-            simcc_z = _swap_pairs(simcc_z, _SIMCC133_HFLIP_PAIRS, dim=1)
+        # Per-sample random linear transform for Z (teaches general depth, not exact scale)
+        z_scale = float(np.random.uniform(1000, 1200))
+        z_root = np.mean(kps3d[7:11, 2])
+
+        for k, simcc_idx in enumerate(_SIMCC_IDX):
+            x_out, y_out, vis = kps2d_out[k]
+            if vis <= 0:
+                continue
+            simcc_x[0, simcc_idx] = _simcc_spike(x_out * 2, n_x)
+            simcc_y[0, simcc_idx] = _simcc_spike(y_out * 2, n_y)
+
+            z_mm = float(kps3d[k, 2])  # already mm from dataset
+            bin_z = float(np.clip(((z_mm - z_root) / z_scale * n_z) + (n_z // 2), 0, n_z - 1))
+            simcc_z[0, simcc_idx] = _simcc_spike(bin_z, n_z)
 
         return OverheadItem(
             valid_entry=tch.tensor([True]),
